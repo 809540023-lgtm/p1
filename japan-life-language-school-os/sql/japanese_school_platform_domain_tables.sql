@@ -285,6 +285,13 @@ create table if not exists school_platform_notifications (
     updated_at timestamptz null
 );
 
+alter table if exists school_platform_users add column if not exists permissions jsonb not null default '[]'::jsonb;
+alter table if exists school_platform_users add column if not exists status text not null default 'active';
+alter table if exists school_platform_users add column if not exists parent_user_id uuid null;
+alter table if exists school_platform_users add column if not exists account_type text not null default 'primary';
+alter table if exists school_platform_users add column if not exists scope_label text null;
+alter table if exists school_platform_users add column if not exists note text null;
+
 alter table if exists school_platform_payments add column if not exists provider text null;
 alter table if exists school_platform_payments add column if not exists provider_payment_id text null;
 alter table if exists school_platform_payments add column if not exists checkout_url text null;
