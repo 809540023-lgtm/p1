@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-06-20T17:29:17.710810+00:00",
+  "generated_at": "2026-06-20T17:36:24.828154+00:00",
   "source_repo_root": "/Users/linemily/Documents/Playground",
   "output_dir": "/Users/linemily/Documents/Playground/dist/japan-life-language-school-os-render-source",
-  "file_count": 36,
+  "file_count": 37,
   "files": [
     ".env.example",
     ".env.production.example",
@@ -33,6 +33,7 @@
     "scripts/verify_school_platform_postgres_row_writes.py",
     "sql/japanese_school_platform_domain_tables.sql",
     "sql/japanese_school_platform_snapshot_store.sql",
+    "data/school_platform_store.json",
     "docs/japanese-school-platform/10-storage-migration-readiness.md",
     "docs/japanese-school-platform/11-db-cutover-runbook.md",
     "docs/japanese-school-platform/12-production-launch-checklist.md",
