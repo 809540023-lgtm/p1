@@ -2733,7 +2733,11 @@ class PlatformStatusService:
                 {"role": "consultant", "email": "mika@jls.local", "password": "mika123", "entry": f"/school-platform/consultant-portal?staff_name={consultant_name.replace(' ', '+')}"},
                 {"role": "student_demo", "email": student_email or "", "password": "query access", "entry": f"/school-platform/student-portal?email={student_email}" if student_email else "/school-platform/student-portal"},
             ]
-        external_gaps = ["正式 PostgreSQL cutover", "Stripe 真實收款"]
+        external_gaps: list[str] = []
+        if summary["backend"] != "postgres":
+            external_gaps.append("正式 PostgreSQL cutover")
+        if payment_provider["provider"] != "stripe":
+            external_gaps.append("Stripe 真實收款")
         if notification_providers["email_provider"] == "mock":
             external_gaps.append("真實 Email 外發")
         if not bool(notification_providers["line_ready"]):
