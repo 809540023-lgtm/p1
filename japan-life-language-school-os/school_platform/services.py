@@ -2630,29 +2630,15 @@ class PlatformStatusService:
             SchoolPlatformAiRuntime(),
         ).provider_status()
 
-        try:
-            ConsultantWorkspaceService(AdmissionsService(self.store)).dashboard(consultant_name)
-            consultant_ready = True
-        except Exception:
-            consultant_ready = False
-
-        try:
-            TeacherWorkspaceService(
-                CatalogService(self.store),
-                TeachingOpsService(self.store, CatalogService(self.store), StudentPortalService(self.store, CatalogService(self.store), AdmissionsService(self.store))),
-                self.store,
-            ).dashboard(teacher_name)
-            teacher_ready = True
-        except Exception:
-            teacher_ready = False
-
-        student_ready = False
-        if student_email:
-            try:
-                self.store.student_dashboard(student_email)
-                student_ready = True
-            except Exception:
-                student_ready = False
+        consultant_ready = bool(consultant_name) and any(
+            item.assigned_staff_name == consultant_name for item in self.store.leads
+        )
+        teacher_ready = bool(teacher_name) and any(
+            item.teacher_name == teacher_name for item in self.store.classes
+        )
+        student_ready = bool(student_email) and any(
+            item.email == student_email for item in self.store.students
+        )
 
         add_check(
             "Storage for daily operations",
