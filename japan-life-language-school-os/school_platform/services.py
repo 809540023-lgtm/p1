@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime, time, timedelta
+from pathlib import Path
 import re
 from uuid import UUID
 
 from school_platform.ai_runtime import SchoolPlatformAiRuntime
 from school_platform.notification_runtime import SchoolPlatformNotificationRuntime
 from school_platform.payment_runtime import SchoolPlatformPaymentRuntime
+from school_platform.verification import TEACHER_VERIFICATION_REQUIRED_SCORE
 from school_platform.schemas import (
     AssignmentCreateRequest,
     AssignmentRecord,
@@ -19,7 +21,10 @@ from school_platform.schemas import (
     AttendanceRecord,
     ClassSummary,
     ClassUpsertRequest,
+    CourseContentSnapshot,
     CourseDetail,
+    CourseModuleRecord,
+    CourseModuleUpsertRequest,
     CourseSummary,
     CourseUpsertRequest,
     DashboardMetrics,
@@ -46,6 +51,7 @@ from school_platform.schemas import (
     ScheduleConflictItem,
     ScheduleOverviewSnapshot,
     ScheduleOverviewSummary,
+    TeacherManualSectionRecord,
     TeacherScheduleLoad,
     TeacherClassSnapshot,
     TeacherClassStudentItem,
@@ -108,6 +114,12 @@ from school_platform.schemas import (
     TeachingSessionRecord,
     TeachingSessionReviewRequest,
     TeachingSessionUpsertRequest,
+    TeachingMaterialRecord,
+    TeachingMaterialUpsertRequest,
+    TeacherVerificationAttemptRecord,
+    TeacherVerificationQuestionRecord,
+    TeacherVerificationSnapshot,
+    TeacherVerificationSubmitRequest,
     TrialBookingCreate,
     TrialBookingResponse,
     TrialSlot,
@@ -136,6 +148,48 @@ class CatalogService:
                 raise KeyError(slug)
             return CourseDetail.model_validate(payload)
         return self.store.get_course(slug)
+
+    def course_modules(self, slug: str) -> list[CourseModuleRecord]:
+        repository = self.store.repository
+        if getattr(repository, "query_supported", lambda: False)():
+            items = [CourseModuleRecord.model_validate(item) for item in repository.list_course_modules(slug)]
+        else:
+            items = self.store.list_course_modules(slug)
+        return sorted(items, key=lambda item: (item.sort_order, item.title))
+
+    def teaching_materials(
+        self,
+        *,
+        course_slug: str | None = None,
+        class_id: UUID | None = None,
+        owner_type: str | None = None,
+    ) -> list[TeachingMaterialRecord]:
+        repository = self.store.repository
+        if getattr(repository, "query_supported", lambda: False)():
+            return [
+                TeachingMaterialRecord.model_validate(item)
+                for item in repository.list_teaching_materials(
+                    course_slug=course_slug,
+                    class_id=str(class_id) if class_id else None,
+                    owner_type=owner_type,
+                )
+            ]
+        return self.store.list_teaching_materials(course_slug=course_slug, class_id=class_id, owner_type=owner_type)
+
+    def get_teaching_material(self, material_id: UUID) -> TeachingMaterialRecord:
+        repository = self.store.repository
+        if getattr(repository, "query_supported", lambda: False)():
+            payload = repository.get_teaching_material(str(material_id))
+            if payload is None:
+                raise KeyError(str(material_id))
+            return TeachingMaterialRecord.model_validate(payload)
+        material = self.store.get_teaching_material(material_id)
+        if material is None:
+            raise KeyError(str(material_id))
+        return material
+
+    def course_content_snapshot(self, slug: str) -> CourseContentSnapshot:
+        return self.store.course_content_snapshot(slug)
 
     def classes_for_course(self, slug: str) -> list[ClassSummary]:
         repository = self.store.repository
@@ -335,6 +389,38 @@ class StudentPortalService:
         if student is None:
             raise KeyError(email)
         return self.admissions_service.list_notifications(student.email)
+
+    def student_materials(self, email: str) -> list[TeachingMaterialRecord]:
+        student = self.get_student_by_email(email)
+        if student is None:
+            raise KeyError(email)
+        repository = self.store.repository
+        if getattr(repository, "query_supported", lambda: False)():
+            classes = self.student_classes(email)
+            class_ids = {item.id for item in classes}
+            course_slugs = {item.course_slug for item in classes}
+            items = [
+                item
+                for item in self.catalog_service.teaching_materials()
+                if item.status == "published"
+                and item.visibility != "internal"
+                and item.course_slug in course_slugs
+                and (item.class_id is None or item.class_id in class_ids)
+            ]
+            return sorted(items, key=lambda item: (item.owner_type != "platform", item.title.lower()))
+        return self.store.student_materials(email)
+
+    def student_has_material_access(self, email: str, material: TeachingMaterialRecord) -> bool:
+        classes = self.student_classes(email)
+        class_ids = {item.id for item in classes}
+        course_slugs = {item.course_slug for item in classes}
+        if material.status != "published":
+            return False
+        if material.visibility == "internal":
+            return False
+        if material.class_id is not None:
+            return material.class_id in class_ids
+        return material.course_slug in course_slugs
 
     def all_students(self) -> list[StudentRecord]:
         latest_by_email: dict[str, StudentRecord] = {}
@@ -1176,6 +1262,96 @@ class TeacherWorkspaceService:
             session_records=session_records,
             generated_at=datetime.now().astimezone(),
         )
+
+
+class TeacherVerificationService:
+    def __init__(self, store) -> None:
+        self.store = store
+
+    def manual_sections(self) -> list[TeacherManualSectionRecord]:
+        repository = self.store.repository
+        if getattr(repository, "query_supported", lambda: False)():
+            return [
+                TeacherManualSectionRecord.model_validate(item)
+                for item in repository.list_teacher_manual_sections()
+            ]
+        return self.store.list_teacher_manual_sections()
+
+    def question_bank(self, section_slug: str | None = None) -> list[TeacherVerificationQuestionRecord]:
+        repository = self.store.repository
+        if getattr(repository, "query_supported", lambda: False)():
+            rows = (
+                repository.list_teacher_verification_questions(section_slug=section_slug)
+                if section_slug
+                else repository.list_teacher_verification_questions()
+            )
+            return [TeacherVerificationQuestionRecord.model_validate(item) for item in rows]
+        return self.store.list_teacher_verification_questions(section_slug)
+
+    def attempts(self, teacher_name: str | None = None) -> list[TeacherVerificationAttemptRecord]:
+        repository = self.store.repository
+        if getattr(repository, "query_supported", lambda: False)():
+            rows = (
+                repository.list_teacher_verification_attempts(teacher_name=teacher_name)
+                if teacher_name
+                else repository.list_teacher_verification_attempts()
+            )
+            return [TeacherVerificationAttemptRecord.model_validate(item) for item in rows]
+        return self.store.list_teacher_verification_attempts(teacher_name)
+
+    def latest_attempt(self, teacher_name: str) -> TeacherVerificationAttemptRecord | None:
+        return next((item for item in self.attempts(teacher_name) if item.teacher_name == teacher_name), None)
+
+    def snapshot(self, teacher_name: str) -> TeacherVerificationSnapshot:
+        latest_attempt = self.latest_attempt(teacher_name)
+        teacher_user = self.store.get_teacher_user_by_name(teacher_name)
+        teacher_email = teacher_user.email if teacher_user is not None else None
+        unlocked_permission = bool(
+            teacher_user is not None and ("*" in teacher_user.permissions or "teaching:verified" in teacher_user.permissions)
+        )
+        if latest_attempt is None:
+            pass_status = "not_started"
+        elif latest_attempt.passed:
+            pass_status = "passed"
+        else:
+            pass_status = "retry_required"
+
+        weak_titles = {
+            item.slug: item.title
+            for item in self.manual_sections()
+            if latest_attempt is not None and item.slug in latest_attempt.weak_section_slugs
+        }
+        recommended_actions: list[str] = []
+        if latest_attempt is None:
+            recommended_actions.append("先閱讀三個手冊章節，再完成開課驗證。")
+        elif latest_attempt.passed:
+            recommended_actions.append("已達標，可進入授課與課後紀錄流程。")
+            if not unlocked_permission:
+                recommended_actions.append("通知管理員補綁教師帳號，才能正式回寫開課權限。")
+        else:
+            recommended_actions.append("重新閱讀未通過章節後再測一次。")
+            if weak_titles:
+                recommended_actions.extend([f"補強：{title}" for title in weak_titles.values()])
+
+        return TeacherVerificationSnapshot(
+            teacher_name=teacher_name,
+            teacher_email=teacher_email,
+            required_score=TEACHER_VERIFICATION_REQUIRED_SCORE,
+            manual_sections=self.manual_sections(),
+            questions=self.question_bank(),
+            latest_attempt=latest_attempt,
+            unlocked_permission=unlocked_permission or bool(latest_attempt and latest_attempt.unlocked_permission),
+            pass_status=pass_status,
+            recommended_actions=recommended_actions,
+            generated_at=datetime.now().astimezone(),
+        )
+
+    def submit(self, payload: TeacherVerificationSubmitRequest) -> TeacherVerificationAttemptRecord:
+        return self.store.submit_teacher_verification(payload)
+
+    def directory(self) -> list[TeacherVerificationSnapshot]:
+        teacher_names = sorted({item.name for item in self.store.list_staff() if item.role == "teacher"})
+        return [self.snapshot(name) for name in teacher_names]
 
 
 class RecruitingService:
@@ -2020,6 +2196,39 @@ class CurriculumAdminService:
         return self.store.update_class(class_id, payload)
 
 
+class CourseContentService:
+    def __init__(self, store, catalog_service: CatalogService) -> None:
+        self.store = store
+        self.catalog_service = catalog_service
+
+    def snapshot(self, course_slug: str) -> CourseContentSnapshot:
+        return self.catalog_service.course_content_snapshot(course_slug)
+
+    def create_platform_module(self, payload: CourseModuleUpsertRequest) -> CourseModuleRecord:
+        return self.store.create_course_module(payload)
+
+    def create_material(self, payload: TeachingMaterialUpsertRequest) -> TeachingMaterialRecord:
+        if payload.owner_type == "teacher":
+            if payload.created_by not in {item.name for item in self.store.staff if item.role == "teacher"}:
+                raise ValueError("Teacher supplemental content must be created by a teacher profile.")
+        return self.store.create_teaching_material(payload)
+
+    def governance_cards(self) -> list[dict[str, object]]:
+        cards: list[dict[str, object]] = []
+        for course in self.catalog_service.list_courses():
+            snapshot = self.snapshot(course.slug)
+            cards.append(
+                {
+                    "course": course,
+                    "core_modules": len(snapshot.core_modules),
+                    "platform_materials": len(snapshot.platform_materials),
+                    "teacher_materials": len(snapshot.teacher_materials),
+                    "has_teacher_layer": any(item.owner_type == "teacher" for item in snapshot.teacher_materials),
+                }
+            )
+        return cards
+
+
 class NotificationService:
     def __init__(self, store) -> None:
         self.store = store
@@ -2512,10 +2721,25 @@ class PlatformStatusService:
 
     def storage_summary(self) -> dict[str, object]:
         mutation_tables = list(getattr(self.store.repository, "mutation_tables", lambda: [])())
+        materials_root = Path(self.store.settings.materials_storage_path)
+        uploaded_files = [item for item in materials_root.rglob("*") if item.is_file()] if materials_root.exists() else []
+        teacher_attempts = self.store.list_teacher_verification_attempts()
         return {
             "backend": self.store.storage_backend_name(),
             "repository_mode": self.store.storage_repository_mode(),
             "json_path": self.store.settings.json_path,
+            "materials_storage": {
+                "path": str(materials_root),
+                "exists": materials_root.exists(),
+                "ready": materials_root.exists() and materials_root.is_dir(),
+                "uploaded_file_count": len(uploaded_files),
+            },
+            "teacher_verification_storage": {
+                "section_count": len(self.store.list_teacher_manual_sections()),
+                "question_count": len(self.store.list_teacher_verification_questions()),
+                "attempt_count": len(teacher_attempts),
+                "verified_teacher_count": sum(1 for item in teacher_attempts if item.unlocked_permission),
+            },
             "postgres_enabled": bool(self.store.settings.postgres_dsn),
             "capabilities": {
                 "query_supported": bool(getattr(self.store.repository, "query_supported", lambda: False)()),

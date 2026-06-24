@@ -18,7 +18,10 @@ from school_platform.schemas import (
     AttendanceRecord,
     ClassSummary,
     ClassUpsertRequest,
+    CourseContentSnapshot,
     CourseDetail,
+    CourseModuleRecord,
+    CourseModuleUpsertRequest,
     CourseSummary,
     CourseUpsertRequest,
     DashboardMetrics,
@@ -58,15 +61,22 @@ from school_platform.schemas import (
     StudentRecord,
     SubAccountCreateRequest,
     SubmissionGradeRequest,
+    TeacherManualSectionRecord,
     TeachingSessionRecord,
     TeachingSessionReviewRequest,
     TeachingSessionUpsertRequest,
+    TeachingMaterialRecord,
+    TeachingMaterialUpsertRequest,
+    TeacherVerificationAttemptRecord,
+    TeacherVerificationQuestionRecord,
+    TeacherVerificationSubmitRequest,
     TrialBookingCreate,
     TrialBookingResponse,
     TrialSlot,
     UserAccount,
 )
 from school_platform.snapshot_migration import normalize_snapshot_for_postgres
+from school_platform.verification import TEACHER_VERIFICATION_REQUIRED_SCORE, teacher_manual_blueprint
 
 _UNSET = object()
 
@@ -74,7 +84,7 @@ _ROLE_PERMISSION_PRESETS: dict[str, list[str]] = {
     "super_admin": ["*"],
     "manager": ["dashboard:read", "leads:read", "leads:write", "classes:read", "payments:read", "staff:read"],
     "consultant": ["leads:read", "leads:write", "dashboard:read"],
-    "teacher": ["dashboard:read", "classes:read"],
+    "teacher": ["dashboard:read", "classes:read", "materials:write"],
 }
 
 _SUBACCOUNT_ROLE_OPTIONS: dict[str, tuple[str, ...]] = {
@@ -114,7 +124,9 @@ class SchoolPlatformStore:
         self.staff: list[StaffRecord] = self._seed_staff()
         self.users: list[UserAccount] = self._seed_users()
         self.courses: list[CourseDetail] = self._seed_courses()
+        self.course_modules: list[CourseModuleRecord] = self._seed_course_modules()
         self.classes: list[ClassSummary] = self._seed_classes()
+        self.teaching_materials: list[TeachingMaterialRecord] = self._seed_teaching_materials()
         self.leads: list[Lead] = self._seed_leads()
         self.lead_logs: list[LeadLog] = self._seed_lead_logs()
         self.students: list[StudentRecord] = []
@@ -124,6 +136,9 @@ class SchoolPlatformStore:
         self.applicants: list[ApplicantRecord] = []
         self.interviews: list[InterviewRecord] = []
         self.onboarding_records: list[OnboardingRecord] = []
+        self.teacher_manual_sections: list[TeacherManualSectionRecord] = self._seed_teacher_manual_sections()
+        self.teacher_verification_questions: list[TeacherVerificationQuestionRecord] = self._seed_teacher_verification_questions()
+        self.teacher_verification_attempts: list[TeacherVerificationAttemptRecord] = []
         self.assignments: list[AssignmentRecord] = self._seed_assignments()
         self.assignment_submissions: list[AssignmentSubmissionRecord] = []
         self.attendance_records: list[AttendanceRecord] = []
@@ -180,6 +195,15 @@ class SchoolPlatformStore:
                 staff_id=staff_by_name["Sora Lin"].id,
                 permissions=["leads:read", "leads:write", "dashboard:read"],
             ),
+            UserAccount(
+                id=uuid4(),
+                email="aki@jls.local",
+                name="Aki Mori",
+                password_hash=self.hash_password("aki123"),
+                role="teacher",
+                staff_id=staff_by_name["Aki Mori"].id,
+                permissions=["dashboard:read", "classes:read", "materials:write"],
+            ),
         ]
 
     def _seed_courses(self) -> list[CourseDetail]:
@@ -225,6 +249,109 @@ class SchoolPlatformStore:
                 highlights=["每週測驗", "AI 弱點分析", "考前衝刺題庫"],
                 modules=["五十音", "基礎文法", "聽力練習", "題型演練"],
                 teacher_names=["Aki Mori"],
+            ),
+        ]
+
+    def _seed_course_modules(self) -> list[CourseModuleRecord]:
+        now = _now()
+        description_map: dict[tuple[str, str], str] = {
+            ("japan-life-starter", "自我介紹與求助"): "建立赴日初期最常用的自我介紹、請求協助與緊急求助表達。",
+            ("japan-life-starter", "租屋與交通"): "涵蓋租屋詢問、看房、地址確認與搭車轉乘的高頻句型。",
+            ("japan-life-starter", "購物與餐飲"): "練習超市、便利商店、餐廳點餐與付款時的實際對話。",
+            ("japan-life-starter", "醫療與行政"): "整理掛號、症狀說明、領藥與區役所行政對應的核心用語。",
+            ("japanese-job-interview", "自我介紹"): "用日商面試節奏整理 30 秒、60 秒與 90 秒版本的自我介紹。",
+            ("japanese-job-interview", "志望動機"): "拆解志望動機的邏輯順序，避免只會背模板卻不會延伸回答。",
+            ("japanese-job-interview", "經歷說明"): "練習把學歷、工作經歷與可轉移能力說得自然又有禮貌。",
+            ("japanese-job-interview", "模擬問答"): "依常見面試問題做追問演練與修正，強化臨場應答能力。",
+            ("jlpt-n5-bootcamp", "五十音"): "建立平假名、片假名識讀與基本發音節奏，避免後續學習卡關。",
+            ("jlpt-n5-bootcamp", "基礎文法"): "把 N5 核心句型拆成可立即套用的生活例句與練習。",
+            ("jlpt-n5-bootcamp", "聽力練習"): "用短句與情境題培養基本聽辨力與反應速度。",
+            ("jlpt-n5-bootcamp", "題型演練"): "用小測驗與題型演練建立正式考試的節奏感。",
+        }
+        items: list[CourseModuleRecord] = []
+        for course in self.courses:
+            for index, title in enumerate(course.modules, start=1):
+                items.append(
+                    CourseModuleRecord(
+                        id=uuid4(),
+                        course_slug=course.slug,
+                        title=title,
+                        description=description_map.get((course.slug, title), f"{course.name} 的第 {index} 個核心教學章節。"),
+                        sort_order=index,
+                        material_url=f"https://school-platform.local/materials/{course.slug}/module-{index}",
+                        owner_type="platform",
+                        status="published",
+                        created_by="Platform Curriculum Team",
+                        updated_by="Platform Curriculum Team",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+        return items
+
+    def _seed_teaching_materials(self) -> list[TeachingMaterialRecord]:
+        now = _now()
+        class_by_slug = {item.course_slug: item for item in self.classes}
+        return [
+            TeachingMaterialRecord(
+                id=uuid4(),
+                course_slug="japan-life-starter",
+                class_id=None,
+                title="平台核心：赴日前生活會話地圖",
+                description="平台自有的生活日語導覽地圖，幫學員先建立租屋、交通、購物、就醫四大場景。",
+                material_url="https://school-platform.local/library/japan-life-starter/life-map",
+                owner_type="platform",
+                visibility="public",
+                status="published",
+                created_by="Platform Curriculum Team",
+                updated_by="Platform Curriculum Team",
+                created_at=now,
+                updated_at=now,
+            ),
+            TeachingMaterialRecord(
+                id=uuid4(),
+                course_slug="japanese-job-interview",
+                class_id=None,
+                title="平台核心：面試回答框架講義",
+                description="整理自我介紹、志望動機與經歷說明的回答骨架，作為平台標準教學資源。",
+                material_url="https://school-platform.local/library/japanese-job-interview/interview-framework",
+                owner_type="platform",
+                visibility="public",
+                status="published",
+                created_by="Platform Curriculum Team",
+                updated_by="Platform Curriculum Team",
+                created_at=now,
+                updated_at=now,
+            ),
+            TeachingMaterialRecord(
+                id=uuid4(),
+                course_slug="jlpt-n5-bootcamp",
+                class_id=None,
+                title="平台核心：N5 打底練習包",
+                description="包含五十音、基礎文法與高頻聽力練習的標準化練習資源。",
+                material_url="https://school-platform.local/library/jlpt-n5-bootcamp/n5-core-pack",
+                owner_type="platform",
+                visibility="public",
+                status="published",
+                created_by="Platform Curriculum Team",
+                updated_by="Platform Curriculum Team",
+                created_at=now,
+                updated_at=now,
+            ),
+            TeachingMaterialRecord(
+                id=uuid4(),
+                course_slug="japan-life-starter",
+                class_id=class_by_slug["japan-life-starter"].id if "japan-life-starter" in class_by_slug else None,
+                title="老師補充：藥局與租屋會話延伸講義",
+                description="Aki Mori 依照晚間班學生常見卡點補充的情境講義，屬於教師補充內容。",
+                material_url="https://school-platform.local/teacher/aki/japan-life-starter/pharmacy-rental-notes",
+                owner_type="teacher",
+                visibility="enrolled_only",
+                status="published",
+                created_by="Aki Mori",
+                updated_by="Aki Mori",
+                created_at=now,
+                updated_at=now,
             ),
         ]
 
@@ -561,12 +688,49 @@ class SchoolPlatformStore:
             )
         return items
 
+    def _seed_teacher_manual_sections(self) -> list[TeacherManualSectionRecord]:
+        blueprint = teacher_manual_blueprint()
+        now = _now()
+        return [
+            TeacherManualSectionRecord(
+                id=uuid4(),
+                slug=item["slug"],
+                title=item["title"],
+                summary=item["summary"],
+                content=item["content"],
+                estimated_minutes=item.get("estimated_minutes", 0),
+                required=bool(item.get("required", True)),
+                created_at=now,
+                updated_at=now,
+            )
+            for item in blueprint["sections"]
+        ]
+
+    def _seed_teacher_verification_questions(self) -> list[TeacherVerificationQuestionRecord]:
+        blueprint = teacher_manual_blueprint()
+        now = _now()
+        return [
+            TeacherVerificationQuestionRecord(
+                id=uuid4(),
+                section_slug=item["section_slug"],
+                prompt=item["prompt"],
+                options=list(item.get("options", [])),
+                correct_option=item["correct_option"],
+                explanation=item.get("explanation"),
+                sort_order=int(item.get("sort_order", 0)),
+                created_at=now,
+            )
+            for item in blueprint["questions"]
+        ]
+
     def _serialize_state(self) -> dict[str, object]:
         return {
             "staff": [item.model_dump(mode="json") for item in self.staff],
             "users": [item.model_dump(mode="json") for item in self.users],
             "courses": [item.model_dump(mode="json") for item in self.courses],
+            "course_modules": [item.model_dump(mode="json") for item in self.course_modules],
             "classes": [item.model_dump(mode="json") for item in self.classes],
+            "teaching_materials": [item.model_dump(mode="json") for item in self.teaching_materials],
             "leads": [item.model_dump(mode="json") for item in self.leads],
             "lead_logs": [item.model_dump(mode="json") for item in self.lead_logs],
             "students": [item.model_dump(mode="json") for item in self.students],
@@ -576,6 +740,9 @@ class SchoolPlatformStore:
             "applicants": [item.model_dump(mode="json") for item in self.applicants],
             "interviews": [item.model_dump(mode="json") for item in self.interviews],
             "onboarding_records": [item.model_dump(mode="json") for item in self.onboarding_records],
+            "teacher_manual_sections": [item.model_dump(mode="json") for item in self.teacher_manual_sections],
+            "teacher_verification_questions": [item.model_dump(mode="json") for item in self.teacher_verification_questions],
+            "teacher_verification_attempts": [item.model_dump(mode="json") for item in self.teacher_verification_attempts],
             "assignments": [item.model_dump(mode="json") for item in self.assignments],
             "assignment_submissions": [item.model_dump(mode="json") for item in self.assignment_submissions],
             "attendance_records": [item.model_dump(mode="json") for item in self.attendance_records],
@@ -586,28 +753,81 @@ class SchoolPlatformStore:
             "notifications": [item.model_dump(mode="json") for item in self.notifications],
         }
 
+    def _merge_seed_staff(self) -> None:
+        existing_names = {item.name for item in self.staff}
+        for seeded in self._seed_staff():
+            if seeded.name not in existing_names:
+                self.staff.append(seeded)
+
+    def _merge_seed_users(self) -> None:
+        existing_emails = {item.email.lower() for item in self.users}
+        for seeded in self._seed_users():
+            if seeded.email.lower() not in existing_emails:
+                self.users.append(seeded)
+
+    def _merge_seed_teacher_manual_sections(self) -> None:
+        existing_slugs = {item.slug for item in self.teacher_manual_sections}
+        for seeded in self._seed_teacher_manual_sections():
+            if seeded.slug not in existing_slugs:
+                self.teacher_manual_sections.append(seeded)
+
+    def _merge_seed_teacher_verification_questions(self) -> None:
+        existing_pairs = {(item.section_slug, item.prompt) for item in self.teacher_verification_questions}
+        for seeded in self._seed_teacher_verification_questions():
+            key = (seeded.section_slug, seeded.prompt)
+            if key not in existing_pairs:
+                self.teacher_verification_questions.append(seeded)
+
     def _load_or_seed(self) -> None:
         payload = self.repository.load()
         if not payload:
             self._persist()
             return
+        needs_persist = False
         loaded_staff = [StaffRecord.model_validate(item) for item in payload.get("staff", [])]
         if loaded_staff:
             self.staff = loaded_staff
+            before_count = len(self.staff)
+            self._merge_seed_staff()
+            needs_persist = needs_persist or len(self.staff) != before_count
+        else:
+            needs_persist = True
 
         loaded_users = [UserAccount.model_validate(item) for item in payload.get("users", [])]
         if loaded_users:
             self.users = loaded_users
+            before_count = len(self.users)
+            self._merge_seed_users()
+            needs_persist = needs_persist or len(self.users) != before_count
         else:
             self.users = self._seed_users()
+            needs_persist = True
 
         loaded_courses = [CourseDetail.model_validate(item) for item in payload.get("courses", [])]
         if loaded_courses:
             self.courses = loaded_courses
+        else:
+            needs_persist = True
+
+        loaded_course_modules = [CourseModuleRecord.model_validate(item) for item in payload.get("course_modules", [])]
+        if loaded_course_modules:
+            self.course_modules = loaded_course_modules
+        else:
+            self.course_modules = self._seed_course_modules()
+            needs_persist = True
 
         loaded_classes = [ClassSummary.model_validate(item) for item in payload.get("classes", [])]
         if loaded_classes:
             self.classes = loaded_classes
+        else:
+            needs_persist = True
+
+        loaded_teaching_materials = [TeachingMaterialRecord.model_validate(item) for item in payload.get("teaching_materials", [])]
+        if loaded_teaching_materials:
+            self.teaching_materials = loaded_teaching_materials
+        else:
+            self.teaching_materials = self._seed_teaching_materials()
+            needs_persist = True
 
         self.leads = [Lead.model_validate(item) for item in payload.get("leads", [])]
         self.lead_logs = [LeadLog.model_validate(item) for item in payload.get("lead_logs", [])]
@@ -617,24 +837,60 @@ class SchoolPlatformStore:
         loaded_job_positions = [JobPositionRecord.model_validate(item) for item in payload.get("job_positions", [])]
         if loaded_job_positions:
             self.job_positions = loaded_job_positions
+        else:
+            needs_persist = True
         self.applicants = [ApplicantRecord.model_validate(item) for item in payload.get("applicants", [])]
         self.interviews = [InterviewRecord.model_validate(item) for item in payload.get("interviews", [])]
         self.onboarding_records = [OnboardingRecord.model_validate(item) for item in payload.get("onboarding_records", [])]
+        loaded_teacher_manual_sections = [
+            TeacherManualSectionRecord.model_validate(item) for item in payload.get("teacher_manual_sections", [])
+        ]
+        if loaded_teacher_manual_sections:
+            self.teacher_manual_sections = loaded_teacher_manual_sections
+            before_count = len(self.teacher_manual_sections)
+            self._merge_seed_teacher_manual_sections()
+            needs_persist = needs_persist or len(self.teacher_manual_sections) != before_count
+        else:
+            self.teacher_manual_sections = self._seed_teacher_manual_sections()
+            needs_persist = True
+        loaded_teacher_verification_questions = [
+            TeacherVerificationQuestionRecord.model_validate(item)
+            for item in payload.get("teacher_verification_questions", [])
+        ]
+        if loaded_teacher_verification_questions:
+            self.teacher_verification_questions = loaded_teacher_verification_questions
+            before_count = len(self.teacher_verification_questions)
+            self._merge_seed_teacher_verification_questions()
+            needs_persist = needs_persist or len(self.teacher_verification_questions) != before_count
+        else:
+            self.teacher_verification_questions = self._seed_teacher_verification_questions()
+            needs_persist = True
+        self.teacher_verification_attempts = [
+            TeacherVerificationAttemptRecord.model_validate(item)
+            for item in payload.get("teacher_verification_attempts", [])
+        ]
         loaded_assignments = [AssignmentRecord.model_validate(item) for item in payload.get("assignments", [])]
         if loaded_assignments:
             self.assignments = loaded_assignments
+        else:
+            needs_persist = True
         self.assignment_submissions = [AssignmentSubmissionRecord.model_validate(item) for item in payload.get("assignment_submissions", [])]
         self.attendance_records = [AttendanceRecord.model_validate(item) for item in payload.get("attendance_records", [])]
         loaded_exams = [ExamRecord.model_validate(item) for item in payload.get("exams", [])]
         if loaded_exams:
             self.exams = loaded_exams
+        else:
+            needs_persist = True
         self.exam_submissions = [ExamSubmissionRecord.model_validate(item) for item in payload.get("exam_submissions", [])]
         self.teaching_session_records = [TeachingSessionRecord.model_validate(item) for item in payload.get("teaching_session_records", [])]
         loaded_ai_logs = [AiLogRecord.model_validate(item) for item in payload.get("ai_logs", [])]
         if loaded_ai_logs:
             self.ai_logs = loaded_ai_logs
+        else:
+            needs_persist = True
         self.notifications = [NotificationRecord.model_validate(item) for item in payload.get("notifications", [])]
-        self._persist()
+        if needs_persist:
+            self._persist()
 
     def _persist(self, state_keys: tuple[str, ...] | None = None) -> None:
         payload = self._serialize_state()
@@ -763,7 +1019,8 @@ class SchoolPlatformStore:
             teacher_names=payload.teacher_names,
         )
         self.courses.append(course)
-        self._persist_rows("courses", [course])
+        self._sync_platform_course_modules(course)
+        self._persist(("courses", "course_modules"))
         return course
 
     def update_course(self, slug: str, payload: CourseUpsertRequest) -> CourseDetail:
@@ -790,7 +1047,8 @@ class SchoolPlatformStore:
         ]
         self.classes = updated_classes
         touched_classes = [item for item in updated_classes if item.course_id == updated.id]
-        self._persist_row_groups({"courses": [updated], "classes": touched_classes})
+        self._sync_platform_course_modules(updated)
+        self._persist(("courses", "classes", "course_modules"))
         return updated
 
     def get_course(self, slug: str) -> CourseDetail:
@@ -798,6 +1056,153 @@ class SchoolPlatformStore:
             if course.slug == slug:
                 return course
         raise KeyError(slug)
+
+    def _sync_platform_course_modules(self, course: CourseDetail) -> None:
+        now = _now()
+        existing = [
+            item
+            for item in self.course_modules
+            if item.course_slug == course.slug and item.owner_type == "platform"
+        ]
+        preserved_ids = [item.id for item in sorted(existing, key=lambda item: item.sort_order)]
+        platform_team = "Platform Curriculum Team"
+        updated_modules: list[CourseModuleRecord] = []
+        for index, title in enumerate(course.modules, start=1):
+            previous = existing[index - 1] if index - 1 < len(existing) else None
+            updated_modules.append(
+                CourseModuleRecord(
+                    id=previous.id if previous is not None else (preserved_ids[index - 1] if index - 1 < len(preserved_ids) else uuid4()),
+                    course_slug=course.slug,
+                    title=title,
+                    description=previous.description if previous is not None else f"{course.name} 的核心章節：{title}",
+                    sort_order=index,
+                    material_url=previous.material_url if previous is not None else f"https://school-platform.local/materials/{course.slug}/module-{index}",
+                    owner_type="platform",
+                    status="published",
+                    created_by=previous.created_by if previous is not None else platform_team,
+                    updated_by=platform_team,
+                    created_at=previous.created_at if previous is not None else now,
+                    updated_at=now,
+                )
+            )
+        self.course_modules = [
+            item
+            for item in self.course_modules
+            if not (item.course_slug == course.slug and item.owner_type == "platform")
+        ] + updated_modules
+
+    def list_course_modules(self, course_slug: str, *, include_archived: bool = False) -> list[CourseModuleRecord]:
+        items = [item for item in self.course_modules if item.course_slug == course_slug]
+        if not include_archived:
+            items = [item for item in items if item.status != "archived"]
+        return sorted(items, key=lambda item: (item.sort_order, item.title))
+
+    def create_course_module(self, payload: CourseModuleUpsertRequest) -> CourseModuleRecord:
+        course = self.get_course(payload.course_slug)
+        now = _now()
+        record = CourseModuleRecord(
+            id=uuid4(),
+            course_slug=payload.course_slug,
+            title=payload.title,
+            description=payload.description,
+            sort_order=payload.sort_order,
+            material_url=payload.material_url,
+            owner_type="platform",
+            status=payload.status,
+            created_by=payload.created_by,
+            updated_by=payload.created_by,
+            created_at=now,
+            updated_at=now,
+        )
+        self.course_modules.append(record)
+        if payload.title not in course.modules:
+            updated_course = course.model_copy(update={"modules": [*course.modules, payload.title]})
+            self.courses = [updated_course if item.slug == course.slug else item for item in self.courses]
+            self._persist(("courses", "course_modules"))
+        else:
+            self._persist_rows("course_modules", [record])
+        return record
+
+    def list_teaching_materials(
+        self,
+        *,
+        course_slug: str | None = None,
+        class_id: UUID | None = None,
+        owner_type: str | None = None,
+        include_archived: bool = False,
+    ) -> list[TeachingMaterialRecord]:
+        items = self.teaching_materials
+        if course_slug:
+            items = [item for item in items if item.course_slug == course_slug]
+        if class_id:
+            items = [item for item in items if item.class_id == class_id]
+        if owner_type:
+            items = [item for item in items if item.owner_type == owner_type]
+        if not include_archived:
+            items = [item for item in items if item.status != "archived"]
+        return sorted(items, key=lambda item: (item.owner_type != "platform", item.title.lower()))
+
+    def create_teaching_material(self, payload: TeachingMaterialUpsertRequest) -> TeachingMaterialRecord:
+        self.get_course(payload.course_slug)
+        if payload.class_id is not None and not any(item.id == payload.class_id for item in self.classes):
+            raise KeyError(str(payload.class_id))
+        if not (payload.material_url or payload.stored_path):
+            raise ValueError("material_url or stored_path is required")
+        now = _now()
+        record = TeachingMaterialRecord(
+            id=uuid4(),
+            course_slug=payload.course_slug,
+            class_id=payload.class_id,
+            title=payload.title,
+            description=payload.description,
+            material_url=payload.material_url,
+            storage_kind=payload.storage_kind,
+            file_name=payload.file_name,
+            stored_path=payload.stored_path,
+            mime_type=payload.mime_type,
+            file_size_bytes=payload.file_size_bytes,
+            owner_type=payload.owner_type,
+            visibility=payload.visibility,
+            status=payload.status,
+            created_by=payload.created_by,
+            updated_by=payload.created_by,
+            created_at=now,
+            updated_at=now,
+        )
+        self.teaching_materials.append(record)
+        self._persist_rows("teaching_materials", [record])
+        return record
+
+    def get_teaching_material(self, material_id: UUID) -> TeachingMaterialRecord | None:
+        return next((item for item in self.teaching_materials if item.id == material_id), None)
+
+    def student_materials(self, email: str) -> list[TeachingMaterialRecord]:
+        classes = self.student_classes(email)
+        class_ids = {item.id for item in classes}
+        course_slugs = {item.course_slug for item in classes}
+        items = [
+            item
+            for item in self.teaching_materials
+            if item.status == "published"
+            and item.visibility != "internal"
+            and item.course_slug in course_slugs
+            and (item.class_id is None or item.class_id in class_ids)
+        ]
+        return sorted(items, key=lambda item: (item.owner_type != "platform", item.title.lower()))
+
+    def course_content_snapshot(self, course_slug: str) -> CourseContentSnapshot:
+        course = self.get_course(course_slug)
+        return CourseContentSnapshot(
+            course=course,
+            core_modules=[item for item in self.list_course_modules(course_slug) if item.owner_type == "platform"],
+            platform_materials=[item for item in self.list_teaching_materials(course_slug=course_slug, owner_type="platform") if item.status == "published"],
+            teacher_materials=[item for item in self.list_teaching_materials(course_slug=course_slug, owner_type="teacher") if item.status == "published"],
+            governance_notes=[
+                "平台核心內容由課程團隊維護，決定課程主軸、核心章節與標準教材。",
+                "教師可補充班級情境講義，但不會直接覆寫平台核心課綱。",
+                "對外展示時，平台會區分『平台核心內容』與『教師補充內容』。",
+            ],
+        )
 
     def classes_for_course(self, slug: str) -> list[ClassSummary]:
         return [item for item in self.classes if item.course_slug == slug]
@@ -1234,6 +1639,133 @@ class SchoolPlatformStore:
         )
         self._persist_row_groups({"onboarding_records": [record], "notifications": [self.notifications[0]]})
         return record
+
+    def list_teacher_manual_sections(self) -> list[TeacherManualSectionRecord]:
+        return sorted(self.teacher_manual_sections, key=lambda item: (item.slug, item.title))
+
+    def list_teacher_verification_questions(
+        self,
+        section_slug: str | None = None,
+    ) -> list[TeacherVerificationQuestionRecord]:
+        items = self.teacher_verification_questions
+        if section_slug:
+            items = [item for item in items if item.section_slug == section_slug]
+        return sorted(items, key=lambda item: (item.section_slug, item.sort_order, item.prompt))
+
+    def list_teacher_verification_attempts(
+        self,
+        teacher_name: str | None = None,
+    ) -> list[TeacherVerificationAttemptRecord]:
+        items = self.teacher_verification_attempts
+        if teacher_name:
+            items = [item for item in items if item.teacher_name == teacher_name]
+        return sorted(items, key=lambda item: item.submitted_at, reverse=True)
+
+    def get_latest_teacher_verification_attempt(self, teacher_name: str) -> TeacherVerificationAttemptRecord | None:
+        return next(iter(self.list_teacher_verification_attempts(teacher_name)), None)
+
+    def get_teacher_user_by_name(self, teacher_name: str) -> UserAccount | None:
+        lowered = teacher_name.strip().lower()
+        return next((item for item in self.users if item.role == "teacher" and item.name.strip().lower() == lowered), None)
+
+    def submit_teacher_verification(self, payload: TeacherVerificationSubmitRequest) -> TeacherVerificationAttemptRecord:
+        teacher_name = payload.teacher_name.strip()
+        if not teacher_name:
+            raise ValueError("teacher_name is required")
+        questions = self.list_teacher_verification_questions()
+        if not questions:
+            raise ValueError("teacher verification question bank is empty")
+
+        answers = {str(key): value.strip().upper() for key, value in payload.answers.items() if value and value.strip()}
+        correct_count = 0
+        weak_section_slugs: set[str] = set()
+        for question in questions:
+            answer = answers.get(str(question.id), "")
+            if answer == question.correct_option.strip().upper():
+                correct_count += 1
+            else:
+                weak_section_slugs.add(question.section_slug)
+        score = round((correct_count / len(questions)) * 100, 1)
+        passed = score >= TEACHER_VERIFICATION_REQUIRED_SCORE
+
+        teacher_user = self.get_teacher_user_by_name(teacher_name)
+        teacher_email = teacher_user.email if teacher_user is not None else None
+        unlocked_permission = bool(
+            teacher_user is not None and ("*" in teacher_user.permissions or "teaching:verified" in teacher_user.permissions)
+        )
+        rows_by_state: dict[str, list[object]] = {}
+        if passed and teacher_user is not None and "*" not in teacher_user.permissions and "teaching:verified" not in teacher_user.permissions:
+            updated_user = teacher_user.model_copy(
+                update={
+                    "permissions": [*teacher_user.permissions, "teaching:verified"],
+                    "note": f"{teacher_user.note}\n已通過教師開課驗證。".strip() if teacher_user.note else "已通過教師開課驗證。",
+                }
+            )
+            self.users = [updated_user if item.id == teacher_user.id else item for item in self.users]
+            rows_by_state["users"] = [updated_user]
+            teacher_user = updated_user
+            teacher_email = updated_user.email
+            unlocked_permission = True
+        elif passed and teacher_user is not None:
+            unlocked_permission = True
+
+        attempt = TeacherVerificationAttemptRecord(
+            id=uuid4(),
+            teacher_name=teacher_name,
+            teacher_email=teacher_email,
+            score=score,
+            passed=passed,
+            required_score=TEACHER_VERIFICATION_REQUIRED_SCORE,
+            question_ids=[item.id for item in questions],
+            answers=answers,
+            weak_section_slugs=sorted(weak_section_slugs),
+            unlocked_permission=unlocked_permission,
+            submitted_at=_now(),
+            reviewer_note=(
+                "已通過，系統已解鎖開課權限。"
+                if unlocked_permission
+                else "成績已達標，但尚未找到對應教師帳號，請管理員補綁帳號。"
+            )
+            if passed
+            else "未達 85 分門檻，請重新閱讀手冊並補強弱項章節。",
+        )
+        self.teacher_verification_attempts.insert(0, attempt)
+        rows_by_state["teacher_verification_attempts"] = [attempt]
+
+        notification_targets = ["admin@jls.local"]
+        if teacher_email:
+            notification_targets.insert(0, teacher_email)
+        created_notifications: list[NotificationRecord] = []
+        for user_email in notification_targets:
+            created_notifications.append(
+                NotificationRecord(
+                    id=uuid4(),
+                    user_email=user_email,
+                    channel="in_app",
+                    type="teacher_verification_updated",
+                    title=f"教師驗證結果：{teacher_name}",
+                    content=(
+                        f"{teacher_name} 驗證分數 {score} 分，已解鎖開課權限。"
+                        if unlocked_permission
+                        else f"{teacher_name} 驗證分數 {score} 分，請補讀手冊後再測。"
+                    ),
+                    status="queued",
+                    created_at=_now(),
+                )
+            )
+        for notification in reversed(created_notifications):
+            self.notifications.insert(0, notification)
+        if created_notifications:
+            rows_by_state["notifications"] = created_notifications
+        self._persist_row_groups(rows_by_state)
+        self.create_ai_log(
+            module_name="teacher_verification",
+            action_name="submit_teacher_verification",
+            actor_email=teacher_email,
+            input_summary=f"teacher={teacher_name}, answers={len(answers)}",
+            output_summary=f"score={score}, passed={passed}, unlocked={unlocked_permission}",
+        )
+        return attempt
 
     def update_applicant_status(self, applicant_id: UUID, payload: ApplicantStatusUpdateRequest) -> ApplicantRecord:
         applicant = self.get_applicant(applicant_id)
@@ -2091,7 +2623,8 @@ class SchoolPlatformStore:
             ProgressModule(name="Student Portal API", status="completed", summary="dashboard、課程、付款、通知 API 已完成。"),
             ProgressModule(name="Notifications", status="completed", summary="通知資料已落地，建單與付款流程會自動產生通知，後台訊息中心也能直接廣播。"),
             ProgressModule(name="Teaching Ops", status="in_progress", summary="作業、出缺勤、測驗、評分、學習進度中心、教師課後紀錄與主管審核鏈已可在教務管理頁操作。"),
-            ProgressModule(name="Teacher Workspace", status="in_progress", summary="教師工作台、班級教學詳頁、待評分作業與測驗流程已補上，班級頁也可直接批改、點名與送出課後紀錄。"),
+            ProgressModule(name="Teacher Workspace", status="in_progress", summary="教師工作台、班級教學詳頁、待評分作業與測驗流程已補上，班級頁也可直接批改、點名、送出課後紀錄與進行教學驗證。"),
+            ProgressModule(name="Teacher Verification", status="in_progress", summary="教師教學手冊、開課驗證題庫、驗證紀錄與管理端總覽已補上第一版。"),
             ProgressModule(name="Recruiting", status="in_progress", summary="公開職缺頁、應徵投遞、招聘後台、應徵者詳頁、面試排程、錄取決策與 onboarding / probation 追蹤已補上第一版。"),
             ProgressModule(name="Reports / AI Center", status="in_progress", summary="主管報表中心、主管工作台、AI 助理中心、AI 操作紀錄與教案草稿中心已補上第一版。"),
             ProgressModule(name="PostgreSQL Repository", status="in_progress", summary="已改成 domain tables + partial table writes + row-level mutation writes 模式，並補上 cutover rehearsal / deployment smoke 工具，等待實際 DSN 與 DB 連線驗證。"),
@@ -2158,6 +2691,11 @@ class SchoolPlatformStore:
                 "time": _now().isoformat(),
                 "title": "教師課後紀錄與主管審核 workflow 已補上",
                 "summary": "教師班級詳頁新增課後紀錄送審表單，教務管理頁新增核准 / 退回修正流程，teacher dashboard 與 class API 也同步顯示審核狀態。",
+            },
+            {
+                "time": _now().isoformat(),
+                "title": "教師教學手冊與開課驗證流程已補上",
+                "summary": "新增教師手冊章節、驗證題庫、教師驗證頁與管理端總覽，通過後會回寫 teaching:verified 權限。",
             },
             {
                 "time": _now().isoformat(),

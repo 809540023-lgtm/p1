@@ -70,6 +70,82 @@ class CourseUpsertRequest(BaseModel):
     teacher_names: list[str] = Field(default_factory=list)
 
 
+ContentOwnerType = Literal["platform", "teacher"]
+ContentPublishStatus = Literal["draft", "published", "archived"]
+ContentVisibility = Literal["public", "enrolled_only", "internal"]
+
+
+class CourseModuleRecord(BaseModel):
+    id: UUID
+    course_slug: str
+    title: str
+    description: str
+    sort_order: int
+    material_url: str | None = None
+    owner_type: ContentOwnerType = "platform"
+    status: ContentPublishStatus = "published"
+    created_by: str
+    updated_by: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class CourseModuleUpsertRequest(BaseModel):
+    course_slug: str
+    title: str
+    description: str
+    sort_order: int = 1
+    material_url: str | None = None
+    status: Literal["draft", "published"] = "published"
+    created_by: str
+
+
+class TeachingMaterialRecord(BaseModel):
+    id: UUID
+    course_slug: str
+    class_id: UUID | None = None
+    title: str
+    description: str
+    material_url: str | None = None
+    storage_kind: Literal["external_url", "uploaded_file"] = "external_url"
+    file_name: str | None = None
+    stored_path: str | None = None
+    mime_type: str | None = None
+    file_size_bytes: int | None = None
+    owner_type: ContentOwnerType = "teacher"
+    visibility: ContentVisibility = "enrolled_only"
+    status: ContentPublishStatus = "published"
+    created_by: str
+    updated_by: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeachingMaterialUpsertRequest(BaseModel):
+    course_slug: str
+    class_id: UUID | None = None
+    title: str
+    description: str
+    material_url: str | None = None
+    storage_kind: Literal["external_url", "uploaded_file"] = "external_url"
+    file_name: str | None = None
+    stored_path: str | None = None
+    mime_type: str | None = None
+    file_size_bytes: int | None = None
+    owner_type: ContentOwnerType = "teacher"
+    visibility: ContentVisibility = "enrolled_only"
+    status: Literal["draft", "published"] = "published"
+    created_by: str
+
+
+class CourseContentSnapshot(BaseModel):
+    course: CourseDetail
+    core_modules: list[CourseModuleRecord] = Field(default_factory=list)
+    platform_materials: list[TeachingMaterialRecord] = Field(default_factory=list)
+    teacher_materials: list[TeachingMaterialRecord] = Field(default_factory=list)
+    governance_notes: list[str] = Field(default_factory=list)
+
+
 class ClassUpsertRequest(BaseModel):
     course_slug: str
     name: str
@@ -589,6 +665,62 @@ class TeacherClassSnapshot(BaseModel):
     assignment_submissions: list[AssignmentSubmissionRecord] = Field(default_factory=list)
     exam_submissions: list[ExamSubmissionRecord] = Field(default_factory=list)
     session_records: list[TeachingSessionRecord] = Field(default_factory=list)
+    generated_at: datetime
+
+
+class TeacherManualSectionRecord(BaseModel):
+    id: UUID
+    slug: str
+    title: str
+    summary: str
+    content: str
+    estimated_minutes: int = 0
+    required: bool = True
+    created_at: datetime
+    updated_at: datetime
+
+
+class TeacherVerificationQuestionRecord(BaseModel):
+    id: UUID
+    section_slug: str
+    prompt: str
+    options: list[str] = Field(default_factory=list)
+    correct_option: str
+    explanation: str | None = None
+    sort_order: int = 0
+    created_at: datetime
+
+
+class TeacherVerificationAttemptRecord(BaseModel):
+    id: UUID
+    teacher_name: str
+    teacher_email: str | None = None
+    score: float
+    passed: bool
+    required_score: float = 85
+    question_ids: list[UUID] = Field(default_factory=list)
+    answers: dict[str, str] = Field(default_factory=dict)
+    weak_section_slugs: list[str] = Field(default_factory=list)
+    unlocked_permission: bool = False
+    submitted_at: datetime
+    reviewer_note: str | None = None
+
+
+class TeacherVerificationSubmitRequest(BaseModel):
+    teacher_name: str
+    answers: dict[str, str] = Field(default_factory=dict)
+
+
+class TeacherVerificationSnapshot(BaseModel):
+    teacher_name: str
+    teacher_email: str | None = None
+    required_score: float = 85
+    manual_sections: list[TeacherManualSectionRecord] = Field(default_factory=list)
+    questions: list[TeacherVerificationQuestionRecord] = Field(default_factory=list)
+    latest_attempt: TeacherVerificationAttemptRecord | None = None
+    unlocked_permission: bool = False
+    pass_status: Literal["not_started", "passed", "retry_required"] = "not_started"
+    recommended_actions: list[str] = Field(default_factory=list)
     generated_at: datetime
 
 

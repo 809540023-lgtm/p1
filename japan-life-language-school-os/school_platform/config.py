@@ -30,6 +30,7 @@ def _default_app_base_url() -> str:
 class SchoolPlatformSettings:
     storage_backend: str = "json"
     json_path: str = "data/school_platform_store.json"
+    materials_storage_path: str = "data/school_platform_materials"
     postgres_dsn: str | None = None
     app_base_url: str = "http://127.0.0.1:8011"
     payment_provider: str = "mock"
@@ -62,6 +63,7 @@ def load_settings() -> SchoolPlatformSettings:
     return SchoolPlatformSettings(
         storage_backend=os.getenv("SCHOOL_PLATFORM_STORAGE_BACKEND", "json").strip().lower(),
         json_path=os.getenv("SCHOOL_PLATFORM_JSON_PATH", "data/school_platform_store.json").strip(),
+        materials_storage_path=os.getenv("SCHOOL_PLATFORM_MATERIALS_STORAGE_PATH", "data/school_platform_materials").strip(),
         postgres_dsn=_first_present_env("SCHOOL_PLATFORM_POSTGRES_DSN", "DATABASE_URL"),
         app_base_url=_default_app_base_url(),
         payment_provider=os.getenv("SCHOOL_PLATFORM_PAYMENT_PROVIDER", "mock").strip().lower(),

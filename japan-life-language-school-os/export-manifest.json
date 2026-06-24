@@ -1,8 +1,8 @@
 {
-  "generated_at": "2026-06-22T07:43:13.439054+00:00",
+  "generated_at": "2026-06-24T14:36:30.398036+00:00",
   "source_repo_root": "/Users/linemily/Documents/Playground",
   "output_dir": "/Users/linemily/Documents/Playground/dist/japan-life-language-school-os-render-source",
-  "file_count": 37,
+  "file_count": 41,
   "files": [
     ".env.example",
     ".env.production.example",
@@ -25,6 +25,7 @@
     "school_platform/services.py",
     "school_platform/snapshot_migration.py",
     "school_platform/store.py",
+    "school_platform/verification.py",
     "scripts/cutover_school_platform_postgres.py",
     "scripts/init_school_platform_postgres.py",
     "scripts/migrate_school_platform_json_to_postgres.py",
@@ -40,6 +41,9 @@
     "docs/japanese-school-platform/13-production-config-and-release.md",
     "docs/japanese-school-platform/15-gmail-line-setup.md",
     "docs/japanese-school-platform/16-render-formal-repo-cutover.md",
+    "docs/japanese-school-platform/18-course-content-governance.md",
+    "docs/japanese-school-platform/19-ai-teaching-runtime-and-verification.md",
+    "tests/test_school_platform_api.py",
     "export-manifest.json"
   ]
 }

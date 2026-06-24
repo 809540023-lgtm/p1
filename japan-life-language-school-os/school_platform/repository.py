@@ -44,9 +44,38 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
         ("objectives", "highlights", "modules", "teacher_names"),
     ),
     TableSpec(
+        "course_modules",
+        "school_platform_course_modules",
+        ("id", "course_slug", "title", "description", "sort_order", "material_url", "owner_type", "status", "created_by", "updated_by", "created_at", "updated_at"),
+    ),
+    TableSpec(
         "classes",
         "school_platform_classes",
         ("id", "course_id", "course_slug", "name", "teacher_name", "start_date", "end_date", "weekday", "start_time", "end_time", "capacity", "enrolled_count", "location_label", "status"),
+    ),
+    TableSpec(
+        "teaching_materials",
+        "school_platform_teaching_materials",
+        (
+            "id",
+            "course_slug",
+            "class_id",
+            "title",
+            "description",
+            "material_url",
+            "storage_kind",
+            "file_name",
+            "stored_path",
+            "mime_type",
+            "file_size_bytes",
+            "owner_type",
+            "visibility",
+            "status",
+            "created_by",
+            "updated_by",
+            "created_at",
+            "updated_at",
+        ),
     ),
     TableSpec(
         "leads",
@@ -110,6 +139,23 @@ TABLE_SPECS: tuple[TableSpec, ...] = (
         "school_platform_onboarding_records",
         ("id", "applicant_id", "owner_name", "stage", "start_date", "probation_status", "probation_end_date", "checklist_items", "notes", "created_at", "updated_at"),
         ("checklist_items",),
+    ),
+    TableSpec(
+        "teacher_manual_sections",
+        "school_platform_teacher_manual_sections",
+        ("id", "slug", "title", "summary", "content", "estimated_minutes", "required", "created_at", "updated_at"),
+    ),
+    TableSpec(
+        "teacher_verification_questions",
+        "school_platform_teacher_verification_questions",
+        ("id", "section_slug", "prompt", "options", "correct_option", "explanation", "sort_order", "created_at"),
+        ("options",),
+    ),
+    TableSpec(
+        "teacher_verification_attempts",
+        "school_platform_teacher_verification_attempts",
+        ("id", "teacher_name", "teacher_email", "score", "passed", "required_score", "question_ids", "answers", "weak_section_slugs", "unlocked_permission", "submitted_at", "reviewer_note"),
+        ("question_ids", "answers", "weak_section_slugs"),
     ),
     TableSpec("assignments", "school_platform_assignments", ("id", "class_id", "title", "content", "due_at", "created_by", "created_at")),
     TableSpec("assignment_submissions", "school_platform_assignment_submissions", ("id", "assignment_id", "student_id", "content", "status", "submitted_at", "feedback", "score")),
@@ -271,6 +317,7 @@ class JsonRepository:
 class PostgresRepository:
     backend_name = "postgres"
     repository_mode = "domain_tables"
+    _INIT_LOCK_KEY = 73245190
 
     def __init__(self, dsn: str) -> None:
         self.dsn = dsn
@@ -290,6 +337,15 @@ class PostgresRepository:
                 for statement in statements:
                     cur.execute(statement)
             conn.commit()
+
+    @staticmethod
+    def _table_states(cur) -> list[bool]:
+        states: list[bool] = []
+        for spec in TABLE_SPECS:
+            cur.execute("select to_regclass(%s)", (f"public.{spec.table_name}",))
+            row = cur.fetchone()
+            states.append(bool(row and row[0]))
+        return states
 
     def _delete_all(self, cur) -> None:
         for spec in reversed(TABLE_SPECS):
@@ -365,14 +421,26 @@ class PostgresRepository:
             self._insert_rows(cur, spec, rows)
 
     def initialize(self) -> dict[str, Any]:
-        self._execute_sql_file(DOMAIN_TABLE_SQL)
+        readiness = self.readiness()
+        if readiness.get("tables_ready"):
+            return readiness
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("select pg_advisory_lock(%s)", (self._INIT_LOCK_KEY,))
+                try:
+                    if not all(self._table_states(cur)):
+                        sql = DOMAIN_TABLE_SQL.read_text(encoding="utf-8")
+                        statements = [statement.strip() for statement in sql.split(";") if statement.strip()]
+                        for statement in statements:
+                            cur.execute(statement)
+                finally:
+                    cur.execute("select pg_advisory_unlock(%s)", (self._INIT_LOCK_KEY,))
+            conn.commit()
         return self.readiness()
 
     def load(self) -> dict[str, Any] | None:
         self.initialize()
-        with self._connect() as conn:
-            with conn.cursor() as cur:
-                payload = {spec.state_key: self._query_rows(spec) for spec in TABLE_SPECS}
+        payload = {spec.state_key: self._query_rows(spec) for spec in TABLE_SPECS}
         if not any(payload.values()):
             return None
         return payload
@@ -423,11 +491,7 @@ class PostgresRepository:
         try:
             with self._connect() as conn:
                 with conn.cursor() as cur:
-                    table_states = []
-                    for spec in TABLE_SPECS:
-                        cur.execute("select to_regclass(%s)", (f"public.{spec.table_name}",))
-                        row = cur.fetchone()
-                        table_states.append(bool(row and row[0]))
+                    table_states = self._table_states(cur)
             tables_ready = all(table_states)
             return {
                 "backend": self.backend_name,
@@ -507,6 +571,11 @@ class PostgresRepository:
         rows = self._query_rows(TABLE_SPEC_BY_KEY["courses"], "slug = %s", (slug,))
         return rows[0] if rows else None
 
+    def list_course_modules(self, course_slug: str | None = None) -> list[dict[str, Any]]:
+        where_sql = "course_slug = %s" if course_slug else ""
+        params: tuple[Any, ...] = (course_slug,) if course_slug else ()
+        return self._query_rows(TABLE_SPEC_BY_KEY["course_modules"], where_sql, params)
+
     def list_classes(self, status: str | None = None, course_slug: str | None = None) -> list[dict[str, Any]]:
         clauses: list[str] = []
         params: list[Any] = []
@@ -518,6 +587,29 @@ class PostgresRepository:
             params.append(course_slug)
         where_sql = " and ".join(clauses)
         return self._query_rows(TABLE_SPEC_BY_KEY["classes"], where_sql, tuple(params))
+
+    def list_teaching_materials(
+        self,
+        course_slug: str | None = None,
+        class_id: str | None = None,
+        owner_type: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if course_slug:
+            clauses.append("course_slug = %s")
+            params.append(course_slug)
+        if class_id:
+            clauses.append("class_id = %s")
+            params.append(class_id)
+        if owner_type:
+            clauses.append("owner_type = %s")
+            params.append(owner_type)
+        return self._query_rows(TABLE_SPEC_BY_KEY["teaching_materials"], " and ".join(clauses), tuple(params))
+
+    def get_teaching_material(self, material_id: str) -> dict[str, Any] | None:
+        rows = self._query_rows(TABLE_SPEC_BY_KEY["teaching_materials"], "id = %s", (material_id,))
+        return rows[0] if rows else None
 
     def list_staff(self, role: str | None = None) -> list[dict[str, Any]]:
         where_sql = "role = %s" if role else ""
@@ -590,6 +682,21 @@ class PostgresRepository:
         where_sql = "applicant_id = %s" if applicant_id else ""
         params: tuple[Any, ...] = (applicant_id,) if applicant_id else ()
         return self._query_rows(TABLE_SPEC_BY_KEY["onboarding_records"], where_sql, params)
+
+    def list_teacher_manual_sections(self, slug: str | None = None) -> list[dict[str, Any]]:
+        where_sql = "slug = %s" if slug else ""
+        params: tuple[Any, ...] = (slug,) if slug else ()
+        return self._query_rows(TABLE_SPEC_BY_KEY["teacher_manual_sections"], where_sql, params)
+
+    def list_teacher_verification_questions(self, section_slug: str | None = None) -> list[dict[str, Any]]:
+        where_sql = "section_slug = %s" if section_slug else ""
+        params: tuple[Any, ...] = (section_slug,) if section_slug else ()
+        return self._query_rows(TABLE_SPEC_BY_KEY["teacher_verification_questions"], where_sql, params)
+
+    def list_teacher_verification_attempts(self, teacher_name: str | None = None) -> list[dict[str, Any]]:
+        where_sql = "teacher_name = %s" if teacher_name else ""
+        params: tuple[Any, ...] = (teacher_name,) if teacher_name else ()
+        return self._query_rows(TABLE_SPEC_BY_KEY["teacher_verification_attempts"], where_sql, params)
 
     def list_ai_logs(self, module_name: str | None = None) -> list[dict[str, Any]]:
         where_sql = "module_name = %s" if module_name else ""

@@ -36,6 +36,21 @@ create table if not exists school_platform_courses (
     teacher_names jsonb not null default '[]'::jsonb
 );
 
+create table if not exists school_platform_course_modules (
+    id uuid primary key,
+    course_slug text not null,
+    title text not null,
+    description text not null,
+    sort_order integer not null,
+    material_url text null,
+    owner_type text not null,
+    status text not null,
+    created_by text not null,
+    updated_by text null,
+    created_at timestamptz not null,
+    updated_at timestamptz not null
+);
+
 create table if not exists school_platform_classes (
     id uuid primary key,
     course_id uuid not null,
@@ -51,6 +66,27 @@ create table if not exists school_platform_classes (
     enrolled_count integer not null,
     location_label text not null,
     status text not null
+);
+
+create table if not exists school_platform_teaching_materials (
+    id uuid primary key,
+    course_slug text not null,
+    class_id uuid null,
+    title text not null,
+    description text not null,
+    material_url text null,
+    storage_kind text not null default 'external_url',
+    file_name text null,
+    stored_path text null,
+    mime_type text null,
+    file_size_bytes integer null,
+    owner_type text not null,
+    visibility text not null,
+    status text not null,
+    created_by text not null,
+    updated_by text null,
+    created_at timestamptz not null,
+    updated_at timestamptz not null
 );
 
 create table if not exists school_platform_leads (
@@ -179,6 +215,44 @@ create table if not exists school_platform_onboarding_records (
     notes text null,
     created_at timestamptz not null,
     updated_at timestamptz not null
+);
+
+create table if not exists school_platform_teacher_manual_sections (
+    id uuid primary key,
+    slug text not null unique,
+    title text not null,
+    summary text not null,
+    content text not null,
+    estimated_minutes integer not null default 0,
+    required boolean not null default true,
+    created_at timestamptz not null,
+    updated_at timestamptz not null
+);
+
+create table if not exists school_platform_teacher_verification_questions (
+    id uuid primary key,
+    section_slug text not null,
+    prompt text not null,
+    options jsonb not null default '[]'::jsonb,
+    correct_option text not null,
+    explanation text null,
+    sort_order integer not null default 0,
+    created_at timestamptz not null
+);
+
+create table if not exists school_platform_teacher_verification_attempts (
+    id uuid primary key,
+    teacher_name text not null,
+    teacher_email text null,
+    score numeric(12,2) not null,
+    passed boolean not null,
+    required_score numeric(12,2) not null,
+    question_ids jsonb not null default '[]'::jsonb,
+    answers jsonb not null default '{}'::jsonb,
+    weak_section_slugs jsonb not null default '[]'::jsonb,
+    unlocked_permission boolean not null default false,
+    submitted_at timestamptz not null,
+    reviewer_note text null
 );
 
 create table if not exists school_platform_assignments (

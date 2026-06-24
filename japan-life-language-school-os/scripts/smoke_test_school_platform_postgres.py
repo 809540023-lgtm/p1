@@ -17,6 +17,8 @@ def run_smoke_checks(repository: PostgresRepository) -> dict[str, object]:
     leads = repository.list_leads()
     notifications = repository.list_notifications()
     onboarding_records = repository.list_onboarding_records()
+    teacher_manual_sections = repository.list_teacher_manual_sections()
+    teacher_verification_questions = repository.list_teacher_verification_questions()
     checks = [
         {
             "name": "readiness.ready",
@@ -47,6 +49,16 @@ def run_smoke_checks(repository: PostgresRepository) -> dict[str, object]:
             "name": "onboarding_records.readable",
             "ok": len(onboarding_records) >= 0,
             "detail": f"onboarding_records={len(onboarding_records)}",
+        },
+        {
+            "name": "teacher_manual_sections.readable",
+            "ok": len(teacher_manual_sections) >= 1,
+            "detail": f"teacher_manual_sections={len(teacher_manual_sections)}",
+        },
+        {
+            "name": "teacher_verification_questions.readable",
+            "ok": len(teacher_verification_questions) >= 1,
+            "detail": f"teacher_verification_questions={len(teacher_verification_questions)}",
         },
         {
             "name": "row_level_write_supported",
